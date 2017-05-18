@@ -17,13 +17,14 @@ limitations under the License.
 package main
 
 import (
+	"bytes"
 	"encoding/json"
-	"errors"
 	"fmt"
-
+	"strconv"
 	"strings"
 
 	"github.com/hyperledger/fabric/core/chaincode/shim"
+	pb "github.com/hyperledger/fabric/protos/peer"
 )
 
 // SimpleChaincode example simple Chaincode implementation
@@ -31,29 +32,25 @@ type SimpleChaincode struct {
 }
 
 type Patient struct {
-	SourceId    string `json:"SourceId"`
-	FirstName   string `json:"FirstName"`
-	LastName    string `json:"LastName"`
-	DateOfBirth string `json:"DateOfBirth"`
-	Sex         string `json:"Sex"`
-	PhoneNumber string `json:"PhoneNumber"`
-	EntityId    string `json:"EntityId"`
-	Meds
+	SourceId    string `json:"sourceId"`
+	FirstName   string `json:"firstName"`
+	LastName    string `json:"lastName"`
+	DateOfBirth string `json:"dateOfBirth"`
+	Sex         string `json:"sex"`
+	PhoneNumber string `json:"phoneNumber"`
+	EntityId    string `json:"entityId"`
+	Meds        []Medication   'json:"meds"'
 }
 
 type Medication struct {
-	MedName    string `json:"MedName"`
-	Dosage     string `json:"Dosage"`
-	FillDate   string `json:"FillDate"`
-	Form       string `json:"Form"`
-	Quantity   string `json:"Quantity"`
-	Count      string `json:"Count"`
-	FillLoc    string `json:"FillLoc"`
-	Prescriber string `json:"Prescriber"`
-}
-
-type Meds struct {
-	Meds []Medication
+	MedName    string `json:"medName"`
+	Dosage     string `json:"dosage"`
+	FillDate   string `json:"fillDate"`
+	Form       string `json:"form"`
+	Quantity   string `json:"quantity"`
+	Count      string `json:"count"`
+	FillLoc    string `json:"fillLoc"`
+	Prescriber string `json:"prescriber"`
 }
 
 func main() {
@@ -64,58 +61,119 @@ func main() {
 }
 
 // Init resets all the things
-func (t *SimpleChaincode) Init(stub shim.ChaincodeStubInterface, function string, args []string) ([]byte, error) {
-	//	if len(args) != 1 {
-	//		return nil, errors.New("Incorrect number of arguments. Expecting 1")
-	//	}
-	//
-	//	err := stub.PutState("hello_world", []byte(args[0]))
-	//	if err != nil {
-	//		return nil, err
-	//	}
+func (t *SimpleChaincode) Init(stub shim.ChaincodeStubInterface) pb.Response {
+	fmt.Println("hl3 Is Starting Up")
+	_, args := stub.GetFunctionAndParameters()
+	var Aval int
+	var err error
 
-	return nil, nil
+	if len(args) != 1 {
+		return shim.Error("Incorrect number of arguments. Expecting 1")
+	}
+
+	// convert numeric string to integer
+	Aval, err = strconv.Atoi(args[0])
+	if err != nil {
+		return shim.Error("Expecting a numeric string argument to Init()")
+	}
+
+	// store compaitible hl3 application version
+	err = stub.PutState("hl3_ui", []byte("1.0.0"))
+	if err != nil {
+		return shim.Error(err.Error())
+	}
+
+	// this is a very simple dumb test.  let's write to the ledger and error on any errors
+	err = stub.PutState("selftest", []byte(strconv.Itoa(Aval))) //making a test var "selftest", its handy to read this right away to test the network
+	if err != nil {
+		return shim.Error(err.Error())                          //self-test fail
+	}
+
+	fmt.Println(" - ready for action")                          //self-test pass
+	return shim.Success(nil)
 }
 
 // Invoke isur entry point to invoke a chaincode function
-func (t *SimpleChaincode) Invoke(stub shim.ChaincodeStubInterface, function string, args []string) ([]byte, error) {
-	fmt.Println("invoke is running " + function)
+func (t *SimpleChaincode) Invoke(stub shim.ChaincodeStubInterface) pb.response {
+	function, args := stub.GetFunctionAndParameters()
+	fmt.Println(" ")
+	fmt.Println("starting invoke, for - " + function)
 
 	// Handle different functions
-	if function == "init" {
-		return t.Init(stub, "init", args)
-	} else if function == "write" {
-		return t.write(stub, args)
+	if function == "init" {                    //initialize the chaincode state, used as reset
+		return t.Init(stub)
+	} else if function == "read" {             //generic read ledger
+		return read(stub, args)
+	} else if function == "write" {            //generic writes to ledger
+		return write(stub, args)
+	} else if function == "addPatient" {
+		return t.addPatient(stub, args)
 	} else if function == "addMedication" {
 		return t.addMedication(stub, args)
 	} else if function == "removeMedication" {
 		return t.removeMedication(stub, args)
 	}
-	fmt.Println("invoke did not find func: " + function)
-
-	return nil, errors.New("Received unknown function invocation: " + function)
+	fmt.Println("Received unknown invoke function name - " + function)
+	return shim.Error("Received unknown invoke function name - '" + function + "'")
 }
 
-// Query is our entry point for queries
-func (t *SimpleChaincode) Query(stub shim.ChaincodeStubInterface, function string, args []string) ([]byte, error) {
-	fmt.Println("query is running " + function)
+func read(stub shim.ChaincodeStubInterface, args []string) pb.Response {
+	var key, jsonResp string
+	var err error
+	fmt.Println("starting read")
 
-	// Handle different functions
-	if function == "read" { //read a variable
-		return t.read(stub, args)
+	if len(args) != 1 {
+		return shim.Error("Incorrect number of arguments. Expecting key of the var to query")
 	}
-	if function == "test" { //read a variable
-		return []byte("IT WORKS!!"), nil
-	}
-	fmt.Println("query did not find func: " + function)
 
-	return nil, errors.New("Received unknown function query: " + function)
+	// input sanitation
+	err = sanitize_arguments(args)
+	if err != nil {
+		return shim.Error(err.Error())
+	}
+
+	key = args[0]
+	valAsbytes, err := stub.GetState(key)           //get the var from ledger
+	if err != nil {
+		jsonResp = "{\"Error\":\"Failed to get state for " + key + "\"}"
+		return shim.Error(jsonResp)
+	}
+
+	fmt.Println("- end read")
+	return shim.Success(valAsbytes)                  //send it onward
+}
+
+func write(stub shim.ChaincodeStubInterface, args []string) pb.Response {
+	var key, value string
+	var err error
+	fmt.Println("starting write")
+
+	if len(args) != 2 {
+		return shim.Error("Incorrect number of arguments. Expecting 2. key of the variable and value to set")
+	}
+
+	// input sanitation
+	err = sanitize_arguments(args)
+	if err != nil {
+		return shim.Error(err.Error())
+	}
+
+	key = args[0]                                   //rename for funsies
+	value = args[1]
+	err = stub.PutState(key, []byte(value))         //write the variable into the ledger
+	if err != nil {
+		return shim.Error(err.Error())
+	}
+
+	fmt.Println("- end write")
+	return shim.Success(nil)
 }
 
 // write - invoke function to write key/value pair
-func (t *SimpleChaincode) addMedication(stub shim.ChaincodeStubInterface, args []string) ([]byte, error) {
+func (t *SimpleChaincode) addMedication(stub shim.ChaincodeStubInterface, args []string) pb.Response {
 
 	bytes, _ := stub.GetState(args[0])
+	fmt.Println(bytes)
 
 	var pat Patient
 	json.Unmarshal(bytes, &pat)
@@ -131,39 +189,41 @@ func (t *SimpleChaincode) addMedication(stub shim.ChaincodeStubInterface, args [
 	med.FillLoc = args[7]
 	med.Prescriber = args[8]
 
-	pat.Meds.Meds = append(pat.Meds.Meds, med)
+	pat.Meds = append(pat.Meds, med)
 
 	bytes, _ = json.Marshal(pat)
 
 	stub.PutState(args[0], bytes)
 
-	return nil, nil
+	return shim.Success(nil)
 
 }
 
 func (t *SimpleChaincode) removeMedication(stub shim.ChaincodeStubInterface, args []string) ([]byte, error) {
 
 	bytes, _ := stub.GetState(args[0])
-
 	fmt.Println(bytes)
+
 	var pat Patient
 	json.Unmarshal(bytes, &pat)
 
-	for index, element := range pat.Meds.Meds {
+	for index, element := range pat.Meds {
 		// fmt.Println(element.MedName)
 		// fmt.Println(args[1])
 		if element.MedName == args[1] && element.FillDate == args[2] {
 			var blankMed Medication
 			fmt.Println("FOUND TO REMOVE!")
-			pat.Meds.Meds[index] = blankMed
+			pat.Meds[index] = blankMed
+			break
 		}
 	}
+	fmt.Println(index)
 
 	bytes, _ = json.Marshal(pat)
 
 	stub.PutState(args[0], bytes)
 
-	return nil, nil
+	return shim.Success(nil)
 
 }
 
@@ -171,11 +231,10 @@ func RemoveIndex(s []Medication, index int) []Medication {
 	return append(s[:index], s[index+1:]...)
 }
 
-// write - invoke function to write key/value pair
-func (t *SimpleChaincode) write(stub shim.ChaincodeStubInterface, args []string) ([]byte, error) {
+func (t *SimpleChaincode) addPatient(stub shim.ChaincodeStubInterface, args []string) pb.Response {
 
 	var err error
-	fmt.Println("running write()")
+	fmt.Println("running addPatient()")
 
 	// if len(args) != 2 {
 	// 	return nil, errors.New("Incorrect number of arguments. Expecting 2. name of the key and value to set")
@@ -188,17 +247,6 @@ func (t *SimpleChaincode) write(stub shim.ChaincodeStubInterface, args []string)
 	var dob = args[3]
 	var sex = args[4]
 	var phone = args[5]
-
-	// bytes, err := stub.GetState(key)
-
-	// if err != nil {
-
-	// } else {
-	// 	err = json.Unmarshal(bytes, &patient)
-	// 	if err != nil {
-	// 		return nil, errors.New("Corrupt Patient record")
-	// 	}
-	// }
 
 	patient.SourceId = sourceid
 	patient.FirstName = firstname
@@ -213,14 +261,6 @@ func (t *SimpleChaincode) write(stub shim.ChaincodeStubInterface, args []string)
 
 	bytes, err := json.Marshal(patient)
 
-	// fmt.Println("Marshalled Patient:")
-	// fmt.Println(bytes)
-
-	// var patient15 Patient
-	// json.Unmarshal(bytes, &patient15)
-
-	// fmt.Println("Patient Unmarshalled:")
-	// fmt.Println(patient15.FirstName)
 	if err != nil {
 		return nil, errors.New("Error creating Patient record")
 	}
@@ -230,62 +270,6 @@ func (t *SimpleChaincode) write(stub shim.ChaincodeStubInterface, args []string)
 		return nil, err
 	}
 
-	// bytes2, err := stub.GetState(key)
-
-	// var patient2 Patient
-	// json.Unmarshal(bytes2, &patient2)
-
-	// fmt.Println("From GetState:")
-	// fmt.Println(patient2.FirstName)
-
-	// sri, err := stub.RangeQueryState("James", "Jim")
-
-	// for sri.HasNext() {
-	// 	a, b, c := sri.Next()
-	// 	fmt.Println(a)
-	// 	fmt.Println(b)
-	// 	fmt.Println(c)
-	// }
-
-	return nil, nil
+	return shim.Success(nil)
 }
 
-// read - query function to read key/value pair
-func (t *SimpleChaincode) read(stub shim.ChaincodeStubInterface, args []string) ([]byte, error) {
-	// var key, jsonResp string
-	// var err error
-	var byteArr []byte
-
-	sri, _ := stub.RangeQueryState("10000", "9999999999999")
-
-	// byteArr, _ = stub.GetState("10001")
-
-	var results []string
-
-	for sri.HasNext() {
-		_, b, _ := sri.Next()
-		results = append(results, string(b))
-	}
-
-	var retString = strings.Join(results, ",")
-
-	retString = "[" + retString + "]"
-
-	byteArr = append(byteArr, []byte(retString)...)
-
-	// if len(args) != 1 {
-	// 	return nil, errors.New("Incorrect number of arguments. Expecting name of the key to query")
-	// }
-
-	// valAsbytes := []byte(patient.PhoneNumber)
-	// if err != nil {
-	// 	jsonResp = "{\"Error\":\"Failed to get state for " + key + "\"}"
-	// 	return nil, errors.New(jsonResp)
-	// }
-
-	return byteArr, nil
-}
-
-// func NewPatient() interface{} {
-// 	return new(Patient)
-// }
