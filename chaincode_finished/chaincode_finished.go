@@ -17,11 +17,10 @@ limitations under the License.
 package main
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"strconv"
-	"strings"
+	"errors"
 
 	"github.com/hyperledger/fabric/core/chaincode/shim"
 	pb "github.com/hyperledger/fabric/protos/peer"
@@ -39,7 +38,7 @@ type Patient struct {
 	Sex         string `json:"sex"`
 	PhoneNumber string `json:"phoneNumber"`
 	EntityId    string `json:"entityId"`
-	Meds        []Medication   'json:"meds"'
+	Meds        []Medication   `json:"meds"`
 }
 
 type Medication struct {
@@ -94,7 +93,7 @@ func (t *SimpleChaincode) Init(stub shim.ChaincodeStubInterface) pb.Response {
 }
 
 // Invoke isur entry point to invoke a chaincode function
-func (t *SimpleChaincode) Invoke(stub shim.ChaincodeStubInterface) pb.response {
+func (t *SimpleChaincode) Invoke(stub shim.ChaincodeStubInterface) pb.Response {
 	function, args := stub.GetFunctionAndParameters()
 	fmt.Println(" ")
 	fmt.Println("starting invoke, for - " + function)
@@ -115,6 +114,21 @@ func (t *SimpleChaincode) Invoke(stub shim.ChaincodeStubInterface) pb.response {
 	}
 	fmt.Println("Received unknown invoke function name - " + function)
 	return shim.Error("Received unknown invoke function name - '" + function + "'")
+}
+
+// ========================================================
+// Input Sanitation - dumb input checking, look for empty strings
+// ========================================================
+func sanitize_arguments(strs []string) error{
+	for i, val:= range strs {
+		if len(val) <= 0 {
+			return errors.New("Argument " + strconv.Itoa(i) + " must be a non-empty string")
+		}
+		if len(val) > 32 {
+			return errors.New("Argument " + strconv.Itoa(i) + " must be <= 32 characters")
+		}
+	}
+	return nil
 }
 
 func read(stub shim.ChaincodeStubInterface, args []string) pb.Response {
@@ -199,7 +213,7 @@ func (t *SimpleChaincode) addMedication(stub shim.ChaincodeStubInterface, args [
 
 }
 
-func (t *SimpleChaincode) removeMedication(stub shim.ChaincodeStubInterface, args []string) ([]byte, error) {
+func (t *SimpleChaincode) removeMedication(stub shim.ChaincodeStubInterface, args []string) pb.Response {
 
 	bytes, _ := stub.GetState(args[0])
 	fmt.Println(bytes)
@@ -207,6 +221,7 @@ func (t *SimpleChaincode) removeMedication(stub shim.ChaincodeStubInterface, arg
 	var pat Patient
 	json.Unmarshal(bytes, &pat)
 
+	var index = 0
 	for index, element := range pat.Meds {
 		// fmt.Println(element.MedName)
 		// fmt.Println(args[1])
@@ -236,9 +251,6 @@ func (t *SimpleChaincode) addPatient(stub shim.ChaincodeStubInterface, args []st
 	var err error
 	fmt.Println("running addPatient()")
 
-	// if len(args) != 2 {
-	// 	return nil, errors.New("Incorrect number of arguments. Expecting 2. name of the key and value to set")
-	// }
 
 	var patient Patient
 	var sourceid = args[0] //rename for funsies
@@ -254,7 +266,7 @@ func (t *SimpleChaincode) addPatient(stub shim.ChaincodeStubInterface, args []st
 	patient.DateOfBirth = dob
 	patient.Sex = sex
 	patient.PhoneNumber = phone
-	patient.Meds.Meds = make([]Medication, 200)
+	patient.Meds = make([]Medication, 200)
 
 	fmt.Println("Before Patient Marshall:")
 	fmt.Println(patient)
@@ -262,12 +274,12 @@ func (t *SimpleChaincode) addPatient(stub shim.ChaincodeStubInterface, args []st
 	bytes, err := json.Marshal(patient)
 
 	if err != nil {
-		return nil, errors.New("Error creating Patient record")
+		return shim.Error(err.Error())
 	}
 
 	err = stub.PutState(sourceid, bytes)
 	if err != nil {
-		return nil, err
+		return shim.Error(err.Error())
 	}
 
 	return shim.Success(nil)
